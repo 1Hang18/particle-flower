@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>手控粒子花朵</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#05050b;color:#f5efff;font-family:system-ui,-apple-system,"Microsoft YaHei",sans-serif;overflow:hidden}
+  #stage{position:fixed;inset:0}
+  canvas{display:block;width:100%;height:100%}
+  .panel{position:fixed;z-index:2;left:22px;top:20px;max-width:min(360px,calc(100vw - 44px));padding:18px 20px;border:1px solid #ffffff24;border-radius:18px;background:#11101bcc;backdrop-filter:blur(12px)}
+  h1{font-size:22px;margin:0 0 8px;letter-spacing:1px}
+  p{font-size:13px;line-height:1.65;color:#c9c3d9;margin:5px 0}
+  .status{display:inline-flex;align-items:center;gap:7px;margin-top:8px;color:#f8b7ef;font-size:12px}
+  .dot{width:7px;height:7px;border-radius:50%;background:#ff7fe3;box-shadow:0 0 10px #ff7fe3}
+  .controls{position:fixed;z-index:2;right:20px;bottom:20px;display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100vw - 40px)}
+  button{border:1px solid #ffffff35;border-radius:999px;background:#181522dd;color:#fff;padding:10px 15px;font-size:13px;cursor:pointer}
+  button:hover{background:#342044}
+  #camera{position:fixed;right:20px;top:20px;width:140px;height:100px;object-fit:cover;transform:scaleX(-1);border-radius:12px;border:1px solid #ffffff30;opacity:.65;display:none}
+  #hint{position:fixed;bottom:25px;left:22px;color:#9f98b2;font-size:12px}
+  @media(max-width:600px){.panel{left:12px;top:12px;padding:13px 15px}h1{font-size:18px}.panel p{font-size:12px}#hint{left:12px;bottom:78px}.controls{right:12px;bottom:12px}#camera{width:100px;height:75px;right:12px;top:12px}}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="canvas"></canvas></div>
+<section class="panel">
+  <h1>手控粒子花朵</h1>
+  <p>移动手掌，让花朵跟随；张开手掌，让花瓣绽放。</p>
+  <p>没有摄像头时，可移动鼠标并点击画面体验。</p>
+  <div class="status"><span class="dot"></span><span id="status">演示模式：移动鼠标 / 点击绽放</span></div>
+</section>
+<video id="camera" playsinline muted></video>
+<div id="hint">靠近：绽放　·　移动：跟随　·　点击：切换花朵状态</div>
+<div class="controls">
+  <button id="camBtn">开启手势识别</button>
+  <button id="bloomBtn">绽放 / 收拢</button>
+  <button id="resetBtn">重置位置</button>
+</div>
+<script type="module">
+import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+const canvas=document.querySelector('#canvas'),ctx=canvas.getContext('2d');
+const statusEl=document.querySelector('#status'),video=document.querySelector('#camera');
+let w=innerWidth,h=innerHeight,dpr=Math.min(devicePixelRatio||1,2);
+function resize(){w=innerWidth;h=innerHeight;dpr=Math.min(devicePixelRatio||1,2);canvas.width=w*dpr;canvas.height=h*dpr;canvas.style.width=w+'px';canvas.style.height=h+'px';ctx.setTransform(dpr,0,0,dpr,0,0)}
+addEventListener('resize',resize);resize();
+let targetX=w*.52,targetY=h*.52,flowerX=targetX,flowerY=targetY,bloom=.82,targetBloom=.82,rotation=0,targetRotation=0;
+let handMode=false,landmarker=null,lastVideoTime=-1,mouseDown=false;
+const count=1900,particles=[];
+for(let i=0;i<count;i++){
+  const petal=Math.floor(Math.random()*6);
+  const t=Math.random();
+  const a=petal*Math.PI/3+(Math.random()-.5)*.55;
+  const r=20+Math.pow(t,.72)*(Math.min(w,h)*.22);
+  particles.push({a,r,petal,t,seed:Math.random()*1000,size:.5+Math.random()*1.7,phase:Math.random()*Math.PI*2});
+}
+function setPointer(x,y){targetX=x;targetY=y}
+canvas.addEventListener('pointermove',e=>{if(!handMode)setPointer(e.clientX,e.clientY)});
+canvas.addEventListener('pointerdown',()=>{if(!handMode){targetBloom=targetBloom>.5?.18:1}});
+document.querySelector('#bloomBtn').onclick=()=>targetBloom=targetBloom>.5?.18:1;
+document.querySelector('#resetBtn').onclick=()=>{targetX=w*.52;targetY=h*.52;targetBloom=.82;targetRotation=0};
+function draw(){
+  requestAnimationFrame(draw);
+  flowerX+=(targetX-flowerX)*.075;flowerY+=(targetY-flowerY)*.075;
+  bloom+=(targetBloom-bloom)*.055;rotation+=(targetRotation-rotation)*.06;
+  ctx.clearRect(0,0,w,h);
+  // subtle background glow
+  const bg=ctx.createRadialGradient(flowerX,flowerY,0,flowerX,flowerY,Math.max(w,h)*.58);
+  bg.addColorStop(0,'rgba(46,17,67,.27)');bg.addColorStop(1,'rgba(4,4,10,0)');
+  ctx.fillStyle=bg;ctx.fillRect(0,0,w,h);
+  const scale=Math.min(w,h)/720;
+  ctx.save();ctx.translate(flowerX,flowerY);ctx.rotate(rotation);
+  // stem
+  ctx.beginPath();ctx.moveTo(0,15*scale);ctx.bezierCurveTo(-22*scale,70*scale,25*scale,105*scale,4*scale,170*scale);
+  ctx.strokeStyle='rgba(102,239,190,.34)';ctx.lineWidth=2*scale;ctx.stroke();
+  // leaves
+  for(let s of [-1,1]){
+    ctx.beginPath();ctx.ellipse(s*17*scale,90*scale,s*18*scale,7*scale,s*.55,0,Math.PI*2);
+    ctx.fillStyle='rgba(81,231,176,.16)';ctx.fill();ctx.strokeStyle='rgba(109,255,195,.28)';ctx.stroke();
+  }
+  for(let i=0;i<particles.length;i++){
+    const p=particles[i];
+    const spread=(.13+bloom*.98);
+    const petalR=(18+p.t* Math.min(w,h)*.23)*spread;
+    const angle=p.a + Math.sin(p.seed+performance.now()*.00045)*.045 + rotation;
+    const x=Math.cos(angle)*petalR + Math.cos(p.phase+performance.now()*.0007)*p.t*7*scale;
+    const y=Math.sin(angle)*petalR*.72 + Math.sin(p.seed)*p.t*8*scale;
+    const twinkle=.55+.45*Math.sin(performance.now()*.002+p.seed);
+    const hue=285 + 42*Math.sin(p.petal*1.2+p.t*3);
+    const alpha=(.35+.65*twinkle)*(0.45+p.t*.55);
+    const radius=p.size*scale*(.6+p.t*.65);
+    ctx.beginPath();ctx.arc(x,y,radius,0,Math.PI*2);
+    ctx.fillStyle=`hsla(${hue},100%,${68+twinkle*20}%,${alpha})`;ctx.fill();
+  }
+  // bright flower center
+  const glow=ctx.createRadialGradient(0,0,0,0,0,42*scale);
+  glow.addColorStop(0,'rgba(255,250,224,.95)');glow.addColorStop(.18,'rgba(255,157,232,.62)');glow.addColorStop(1,'rgba(255,95,220,0)');
+  ctx.fillStyle=glow;ctx.beginPath();ctx.arc(0,0,42*scale,0,Math.PI*2);ctx.fill();
+  for(let i=0;i<65;i++){const a=i*2.399, r=(i%13)*1.4*scale;ctx.beginPath();ctx.arc(Math.cos(a)*r,Math.sin(a)*r,.8*scale,0,Math.PI*2);ctx.fillStyle='rgba(255,255,235,.9)';ctx.fill()}
+  ctx.restore();
+  // drifting ambient particles
+  for(let i=0;i<80;i++){
+    const t=performance.now()*.00015+i*12.9898;
+    const x=(Math.sin(t*1.3+i*4.1)*.5+.5)*w,y=(Math.cos(t+i*2.7)*.5+.5)*h;
+    ctx.fillStyle=`rgba(220,150,255,${.08+.18*(.5+.5*Math.sin(t+i))})`;
+    ctx.beginPath();ctx.arc(x,y,.6+(i%3)*.35,0,Math.PI*2);ctx.fill();
+  }
+}
+draw();
+async function startCamera(){
+  const btn=document.querySelector('#camBtn');btn.disabled=true;statusEl.textContent='正在加载手势识别模块…';
+  try{
+    const vision=await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+    landmarker=await HandLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',delegate:'GPU'},runningMode:'VIDEO',numHands:1});
+    const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:640,height:480},audio:false});
+    video.srcObject=stream;await video.play();video.style.display='block';handMode=true;
+    statusEl.textContent='手势模式已开启：将手放在摄像头前';
+    btn.textContent='关闭手势识别';btn.disabled=false;btn.onclick=stopCamera;trackHand();
+  }catch(e){
+    console.error(e);statusEl.textContent='未能开启摄像头：请用 HTTPS 或 localhost 打开，并允许摄像头权限。';
+    btn.disabled=false;btn.textContent='重试开启手势识别';
+  }
+}
+function stopCamera(){
+  handMode=false;
+  if(video.srcObject)video.srcObject.getTracks().forEach(t=>t.stop());
+  video.srcObject=null;video.style.display='none';if(landmarker){landmarker.close();landmarker=null}
+  statusEl.textContent='演示模式：移动鼠标 / 点击绽放';
+  const btn=document.querySelector('#camBtn');btn.textContent='开启手势识别';btn.onclick=startCamera;
+}
+function trackHand(){
+  if(!handMode||!landmarker)return;
+  if(video.readyState>=2&&video.currentTime!==lastVideoTime){
+    lastVideoTime=video.currentTime;
+    const result=landmarker.detectForVideo(video,performance.now());
+    if(result.landmarks&&result.landmarks.length){
+      const lm=result.landmarks[0];
+      // Mirror x to match the mirrored preview.
+      targetX=(1-lm[9].x)*w;targetY=lm[9].y*h;
+      const wrist=lm[0],tips=[lm[8],lm[12],lm[16],lm[20]];
+      const avg=tips.reduce((s,p)=>s+Math.hypot(p.x-wrist.x,p.y-wrist.y),0)/tips.length;
+      targetBloom=Math.max(.15,Math.min(1.15,(avg-.17)*5.2));
+      targetRotation+=(lm[9].x-.5)*.025;
+      statusEl.textContent=avg>.38?'手掌已识别：花朵正在绽放':'手掌已识别：尝试张开手指';
+    }else statusEl.textContent='正在寻找手掌…请把手放在镜头前';
+  }
+  requestAnimationFrame(trackHand);
+}
+document.querySelector('#camBtn').onclick=startCamera;
+</script>
+</body>
+</html>
